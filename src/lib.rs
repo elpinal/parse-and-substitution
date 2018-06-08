@@ -10,7 +10,7 @@ fn ident(s: &str) -> Token {
     Token::Ident(s.to_string())
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Term {
     Abs(Box<Term>),
     App(Box<Term>, Box<Term>),
@@ -89,6 +89,62 @@ impl Parser {
     }
 }
 
+impl Term {
+    fn map<F>(&mut self, f: &F, c: usize)
+    where
+        F: Fn(usize, usize, String, &mut Term),
+    {
+        use self::Term::*;
+        match self {
+            &mut Var(n, _) => {
+                let s = match self {
+                    &mut Var(_, ref s) => s.clone(),
+                    _ => unreachable!(),
+                };
+                f(c, n, s, self)
+            }
+            &mut Abs(ref mut t) => t.map(f, c + 1),
+            &mut App(ref mut t1, ref mut t2) => {
+                t1.map(f, c + 1);
+                t2.map(f, c + 1);
+            }
+        }
+    }
+
+    fn shift_above(&mut self, c: usize, d: isize) {
+        let f = |c, n, s: String, t: &mut Term| {
+            if c <= n {
+                *t = Term::Var((n as isize + d) as usize, s);
+            }
+        };
+        self.map(&f, c);
+    }
+
+    /// Shifts free variables by `d`.
+    fn shift(&mut self, d: isize) {
+        self.shift_above(0, d);
+    }
+
+    fn subst(&mut self, j: usize, t: Term) {
+        let f = |c, n, _, t0: &mut Term| {
+            if c + j == n {
+                let mut t = t.clone();
+                t.shift(c as isize);
+                *t0 = t;
+            }
+        };
+        self.map(&f, 0);
+    }
+
+    /// Substitutes `t` for the variables `0` in `self`, assuming `t` is under a context whose
+    /// length is one more than `self`'s context.
+    fn subst_top(&mut self, mut t: Term) {
+        t.shift(1);
+        self.subst(0, t);
+        self.shift(-1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +173,32 @@ mod tests {
             parse(ts),
             Some(abs(app(app(var(0, "x"), var(0, "x")), var(0, "x"))))
         );
+    }
+
+    #[test]
+    fn test_shift_closed_term() {
+        let mut t = abs(app(var(0, "x"), abs(app(var(0, "y"), var(1, "x")))));
+        let t0 = t.clone();
+        t.shift(0);
+        assert_eq!(t, t0);
+
+        t.shift(1);
+        assert_eq!(t, t0);
+
+        let mut t = abs(app(app(var(0, "x"), var(0, "x")), var(0, "x")));
+        let t0 = t.clone();
+        t.shift(10);
+        assert_eq!(t, t0);
+    }
+
+    #[test]
+    fn test_shift() {
+        let mut t = var(0, "x");
+        let t0 = t.clone();
+        t.shift(0);
+        assert_eq!(t, t0);
+
+        t.shift(1);
+        assert_eq!(t, var(1, "x"));
     }
 }
